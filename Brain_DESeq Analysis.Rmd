@@ -1,0 +1,2025 @@
+---
+title: "RNA seq analysis - Surface Vs Cavefish"
+author: "Lawal Agboola"
+date: "2024-09-08"
+output: html_document
+---
+
+## Load necessary libraries
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(dplyr)
+library(pheatmap)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(grid)
+library(futile.logger)
+library(VennDiagram) 
+library(clusterProfiler)
+library(org.Dr.eg.db)  # Zebrafish annotation package
+library(annotables)
+library(enrichplot)
+library(DOSE)           # For disease ontology enrichment
+library(pathview)
+library(viridis)
+```
+
+# Set working directory to brain folder
+```{r}
+setwd("C:/Users/agboo/Desktop/Keen's Lab/Neurodegenerative diseases/Data/Brain")
+```
+
+
+```{r}
+# Load the raw count data
+raw_counts <- read.csv("raw_counts_brain.csv", row.names = 1)
+
+# Define coldata (already done, using the structure you provided earlier)
+coldata <- data.frame(
+  species = c("cavefish", "cavefish", "cavefish", "cavefish", 
+              "cavefish", "cavefish", "cavefish", 
+              "surface", "surface", "surface", "surface", 
+              "surface", "surface", "surface", "surface"),
+ 
+   Age = c("young", "young", "young", "young", 
+          "old", "old", "old", 
+          "young", "young", "young", "young", 
+          "old", "old", "old", "old")
+)
+
+# Assign row names to coldata to match the sample names in raw counts
+row.names(coldata) <- c("PA_BRAIN_1", "PA_BRAIN_2", "PA_BRAIN_3","PA_BRAIN_4",                         "PA_BRAIN_6", "PA_BRAIN_7", "PA_BRAIN_8", 
+                        "SF_BRAIN_1", "SF_BRAIN_2", "SF_BRAIN_3","SF_BRAIN_4",
+                        "SF_BRAIN_5", "SF_BRAIN_6", "SF_BRAIN_7","SF_BRAIN_8")
+
+# Convert character columns to factors
+coldata <- mutate_if(coldata, is.character, as.factor)
+```
+
+# Genename data
+```{r}
+# Read the two CSV files
+astyanax_data <- read.csv("astyanax_mexicanus_2.0.csv", stringsAsFactors = FALSE)
+```
+
+
+# PCA plot for whole brain
+```{r}
+# Combine all DESeqDataSet objects into one for the whole dataset
+dds_whole_brain <- DESeqDataSetFromMatrix(countData = raw_counts, 
+                                        colData = coldata, 
+                                        design = ~ Age + species)
+
+# Perform variance-stabilizing transformation (VST) on the combined dataset
+vsd_whole_brain <- vst(dds_whole_brain, blind = FALSE)
+
+
+# Extract PCA data and calculate percentage of variance explained by each component
+pca_data <- plotPCA(vsd_whole_brain, intgroup = c("species", "Age"), returnData = TRUE)
+percentVar <- round(100 * attr(pca_data, "percentVar"))
+
+# Create the PCA plot with ggplot2
+p <- ggplot(pca_data, aes(PC1, PC2, color = species, shape = Age)) +
+  geom_point(size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  ggtitle("PCA Plot: Whole Brain Dataset") +
+  theme_minimal()
+
+# Print the PCA plot
+print(p)
+```
+
+# Extract comparism of interest
+```{r}
+# Subset raw counts for each comparison
+
+# 1. Surface young and Surface old samples
+surface_young_old <- 
+  raw_counts[, c("SF_BRAIN_1","SF_BRAIN_2","SF_BRAIN_3","SF_BRAIN_4",
+                 "SF_BRAIN_5","SF_BRAIN_6","SF_BRAIN_7","SF_BRAIN_8")]
+
+# 2. Surface young and Cavefish young samples
+cavefish_old_young <- 
+  raw_counts[, c("PA_BRAIN_1", "PA_BRAIN_2", "PA_BRAIN_3", "PA_BRAIN_4", 
+                  "PA_BRAIN_6", "PA_BRAIN_7", "PA_BRAIN_8")]
+
+```
+
+# Surface Old and young
+# coldata_surface_young_old
+```{r}
+# Create coldata for Surface Young and Surface Old samples
+coldata_surface_young_old <- data.frame(
+  age = c("young", "young", "young", "young", 
+          "old", "old", "old", "old")
+)
+
+# Assign row names corresponding to sample names in the raw counts matrix
+row.names(coldata_surface_young_old) <- 
+  c("SF_BRAIN_1", "SF_BRAIN_2", "SF_BRAIN_3", "SF_BRAIN_4", 
+    "SF_BRAIN_5", "SF_BRAIN_6", "SF_BRAIN_7", "SF_BRAIN_8")
+
+```
+
+# Run DESeq2 Analysis
+```{r}
+# Ensure row names of raw_counts match the sample names in coldata_surface_old_young
+dds <- DESeqDataSetFromMatrix(countData = surface_young_old, 
+                              colData = coldata_surface_young_old, 
+                              design = ~ age)
+
+# Run DESeq2 analysis
+dds <- DESeq(dds)
+
+# Surface Old vs. Surface Young
+# Get results for Surface Old vs. Surface Young
+resSF_old <- results(dds, contrast = c("age", "old", "young"))
+
+# Filter for significant genes with padj ≤ 0.05
+sig_genesOld <- resSF_old[which(resSF_old$padj <= 0.05 & !is.na(resSF_old$padj)), ]
+
+# Further filter for biologically meaningful fold changes (e.g., |log2FC| ≥ 1)
+# upregulated
+sig_genesOld_up <- sig_genesOld[sig_genesOld$log2FoldChange >= 1, ]
+sig_genesOld_up <- data.frame(sig_genesOld_up)
+
+# Convert row names to first column
+sig_genesOld_up <- data.frame(Gene.stable.ID = rownames(sig_genesOld_up), sig_genesOld_up, row.names = NULL)
+
+# Perform the merge on the "Gene stable ID" column
+sig_genesOld_up <- merge(sig_genesOld_up, 
+                           astyanax_data[, c("Gene.stable.ID", "Gene.name")], by = "Gene.stable.ID", all.x = TRUE)
+
+sig_genesOld_up <- sig_genesOld_up[sig_genesOld_up$Gene.name != "", ]
+
+# Save to a new file
+write.csv(sig_genesOld_up, "up_surface_old_young.csv")
+
+# downregulated
+sig_genesOlds_down <- sig_genesOld[sig_genesOld$log2FoldChange <= -1, ]
+sig_genesOld_down <- data.frame(sig_genesOlds_down)
+
+# Convert row names to first column
+sig_genesOld_down <- data.frame(Gene.stable.ID = rownames(sig_genesOld_down), sig_genesOld_down, row.names = NULL)
+
+# Perform the merge on the "Gene stable ID" column
+sig_genesOld_down <- merge(sig_genesOld_down, 
+                           astyanax_data[, c("Gene.stable.ID", "Gene.name")], by = "Gene.stable.ID", all.x = TRUE)
+
+sig_genesOld_down <- sig_genesOld_down[sig_genesOld_down$Gene.name != "", ]
+
+```
+
+
+# For GO analysis
+```{r}
+# # Positively regulated genes (log2FoldChange >= 1)
+upregulated_oldgenes1 <- sig_genesOld[sig_genesOld$log2FoldChange >= 1, ]
+upregulated_oldgenes1 <- data.frame(upregulated_oldgenes1)
+
+# insert genename
+# Convert row names to first column
+upregulated_oldgenes1 <- data.frame(Gene.stable.ID = rownames(upregulated_oldgenes1), upregulated_oldgenes1, row.names = NULL)
+
+# Perform the merge on the "Gene stable ID" column
+upregulated_oldgenes1 <- merge(upregulated_oldgenes1,
+                        astyanax_data[, c("Gene.stable.ID", "Gene.name")],
+                        by = "Gene.stable.ID", all.x = TRUE)
+
+write.csv(upregulated_oldgenes1, "up_surface_old_youngFoldchange1.csv")
+
+# Negatively regulated genes (log2FoldChange <= -1)
+downregulated_oldgenes1 <- sig_genesOld[sig_genesOld$log2FoldChange <= -1, ]
+downregulated_oldgenes1 <- data.frame(downregulated_oldgenes1)
+
+# insert genename
+# Convert row names to first column
+downregulated_oldgenes1 <- data.frame(Gene.stable.ID = rownames(downregulated_oldgenes1), downregulated_oldgenes1, row.names = NULL)
+
+# Perform the merge on the "Gene stable ID" column
+downregulated_oldgenes1 <- merge(downregulated_oldgenes1,
+                           astyanax_data[, c("Gene.stable.ID", "Gene.name")], by = "Gene.stable.ID", all.x = TRUE)
+
+write.csv(downregulated_oldgenes1, "down_surface_old_youngFoldchange1.csv")
+```
+
+
+```{r}
+# Surface Young vs. Surface Old
+# Get results for Surface Young vs. Surface Old
+resSF_young <- results(dds, contrast = c("Age", "young", "old"))
+
+# Filter for significant genes with padj ≤ 0.05
+sig_genesYg <- resSF_young[which(resSF_young$padj <= 0.05 & !is.na(resSF_young$padj)), ]
+
+# Further filter for biologically meaningful fold changes (e.g., |log2FC| ≥ 1)
+# upregulated
+sig_genesYg_up <- sig_genesYg[sig_genesYg$log2FoldChange >= 1, ]
+sig_genesYg_up <- data.frame(sig_genesYg_up)
+
+# Save to a new file
+write.csv(sig_genesYg_up, "up_surface_young_old.csv")
+
+# downregulated
+sig_genesYg_down <- sig_genesYg[sig_genesYg$log2FoldChange <= -1, ]
+sig_genesYg_down <- data.frame(sig_genesYg_down)
+
+```
+
+#___________________________________log2FoldChange of 0
+# Go analysis up
+```{r}
+upregulated_oldgenes <- read.csv("up_surface_old_youngFoldchange0.csv")
+
+gene_list <- upregulated_oldgenes$Gene.name
+
+# Perform GO Enrichment Analysis
+
+go_enrich <- enrichGO(
+    gene          = gene_list,       # List of genes
+    OrgDb         = org.Dr.eg.db,    # Zebrafish annotation database
+    keyType       = "SYMBOL",        # Adjust if using Ensembl ("ENSEMBL") or Entrez ("ENTREZID")
+    ont           = "BP",            # Ontology: "BP" (Biological Process), "MF", or "CC"
+    pAdjustMethod = "BH",            # Adjusted p-value method (Benjamini-Hochberg)
+    pvalueCutoff  = 0.5,            # p-value cutoff for significance
+    qvalueCutoff  = 0.5             # q-value cutoff
+)
+
+# # View results
+# head(go_enrich)
+# 
+# # Plot top 20 enriched GO terms
+#barplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+# dotplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+
+
+#  Perform KEGG Pathway Enrichment Analysis
+
+gene_entrez <- bitr(gene_list, fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Dr.eg.db)
+entrez_ids <- gene_entrez$ENTREZID  # Extract Entrez IDs
+
+kegg_enrich <- enrichKEGG(
+    gene          = entrez_ids,
+    organism      = "dre",           # "dre" for Zebrafish, check KEGG for supported organisms
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.5,
+    qvalueCutoff  = 0.5
+)
+
+# Generate a dotplot with better aesthetics for GO
+dotplot(go_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 14),  # Adjust legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "GO Enrichment (Biological Process)",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+  
+ggsave("GO_Enrichment_SOSY_up.png", width = 10, height = 10, dpi = 300)  
+
+# __________________
+# KEGG Pathway Enrichment
+
+# Generate a dotplot with better aesthetics for KEGG
+dotplot(kegg_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 14),  # Adjust legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "KEGG Pathway Enrichment",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+
+# Save as png
+ggsave("KEGG_pathway_enrichment_SOSY_up.png", width = 9, height = 10, dpi = 300)  # Adjust height as needed
+
+```
+
+
+# Go analysis down
+```{r}
+downregulated_oldgenes <- read.csv("down_surface_old_youngFoldchange0.csv")
+
+gene_list <- downregulated_oldgenes$Gene.name
+
+# Perform GO Enrichment Analysis
+
+go_enrich <- enrichGO(
+    gene          = gene_list,       # List of genes
+    OrgDb         = org.Dr.eg.db,    # Zebrafish annotation database
+    keyType       = "SYMBOL",        # Adjust if using Ensembl ("ENSEMBL") or Entrez ("ENTREZID")
+    ont           = "BP",            # Ontology: "BP" (Biological Process), "MF", or "CC"
+    pAdjustMethod = "BH",            # Adjusted p-value method (Benjamini-Hochberg)
+    pvalueCutoff  = 0.5,            # p-value cutoff for significance
+    qvalueCutoff  = 0.5             # q-value cutoff
+)
+
+#  Perform KEGG Pathway Enrichment Analysis
+
+gene_entrez <- bitr(gene_list, fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Dr.eg.db)
+entrez_ids <- gene_entrez$ENTREZID  # Extract Entrez IDs
+
+kegg_enrich <- enrichKEGG(
+    gene          = entrez_ids,
+    organism      = "dre",# "dre" for Zebrafish, check KEGG for supported organisms
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.5,
+    qvalueCutoff  = 0.5
+)
+
+# write.csv(go_enrich@result, "GO_Enrichment_Results.csv")
+# write.csv(kegg_enrich@result, "KEGG_Enrichment_Results.csv")
+
+# ________________
+
+# Generate a dotplot with better aesthetics for GO
+dotplot(go_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 14),  # Adjust legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "GO Enrichment (Biological Process)",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+  
+ggsave("GO Enrichment_SOSY_down.png", width = 10, height = 10, dpi = 300)  
+
+# __________________
+# KEGG Pathway Enrichment
+
+# Generate a dotplot with better aesthetics for KEGG
+dotplot(kegg_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 14),  # Adjust legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "KEGG Pathway Enrichment",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+
+# Save as png
+ggsave("KEGG_pathway_enrichment_SOSY_down.png", width = 9, height = 10, dpi = 300)  # Adjust height as needed
+
+```
+
+
+#___________________________________log2FoldChange of +/-1
+# Go analysis up
+```{r}
+#upregulated_oldgenes <- read.csv("up_surface_old_youngFoldchange0.csv")
+
+gene_list <- sig_genesOld_up$Gene.name
+
+# Perform GO Enrichment Analysis
+
+go_enrich <- enrichGO(
+    gene          = gene_list,       # List of genes
+    OrgDb         = org.Dr.eg.db,    # Zebrafish annotation database
+    keyType       = "SYMBOL",        # Adjust if using Ensembl ("ENSEMBL") or Entrez ("ENTREZID")
+    ont           = "BP",            # Ontology: "BP" (Biological Process), "MF", or "CC"
+    pAdjustMethod = "BH",            # Adjusted p-value method (Benjamini-Hochberg)
+    pvalueCutoff  = 0.5,            # p-value cutoff for significance
+    qvalueCutoff  = 0.5             # q-value cutoff
+)
+
+# # View results
+# head(go_enrich)
+# 
+# # Plot top 20 enriched GO terms
+#barplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+# dotplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+
+
+#  Perform KEGG Pathway Enrichment Analysis
+
+gene_entrez <- bitr(gene_list, fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Dr.eg.db)
+entrez_ids <- gene_entrez$ENTREZID  # Extract Entrez IDs
+
+kegg_enrich <- enrichKEGG(
+    gene          = entrez_ids,
+    organism      = "dre",           # "dre" for Zebrafish, check KEGG for supported organisms
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.5,
+    qvalueCutoff  = 0.5
+)
+
+# Generate a dotplot with better aesthetics for GO
+dotplot(go_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 14),  # Adjust legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "GO Enrichment (Biological Process)",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+  
+ggsave("GO_Enrichment_SOSY_up1.png", width = 10, height = 10, dpi = 300)  
+
+# __________________
+# KEGG Pathway Enrichment
+
+# Generate a dotplot with better aesthetics for KEGG
+dotplot(kegg_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 14),  # Adjust legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "KEGG Pathway Enrichment",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+
+# Save as png
+ggsave("KEGG_pathway_enrichment_SOSY_up1.png", width = 9, height = 10, dpi = 300)  # Adjust height as needed
+
+```
+
+
+# Go analysis down
+```{r}
+#downregulated_oldgenes <- read.csv("down_surface_old_youngFoldchange0.csv")
+
+gene_list <- sig_genesOld_down$Gene.name
+
+# Perform GO Enrichment Analysis
+
+go_enrich <- enrichGO(
+    gene          = gene_list,       # List of genes
+    OrgDb         = org.Dr.eg.db,    # Zebrafish annotation database
+    keyType       = "SYMBOL",        # Adjust if using Ensembl ("ENSEMBL") or Entrez ("ENTREZID")
+    ont           = "BP",            # Ontology: "BP" (Biological Process), "MF", or "CC"
+    pAdjustMethod = "BH",            # Adjusted p-value method (Benjamini-Hochberg)
+    pvalueCutoff  = 0.5,            # p-value cutoff for significance
+    qvalueCutoff  = 0.5             # q-value cutoff
+)
+
+# # View results
+# head(go_enrich)
+# 
+# # Plot top 20 enriched GO terms
+#barplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+# dotplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+
+
+#  Perform KEGG Pathway Enrichment Analysis
+
+gene_entrez <- bitr(gene_list, fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Dr.eg.db)
+entrez_ids <- gene_entrez$ENTREZID  # Extract Entrez IDs
+
+kegg_enrich <- enrichKEGG(
+    gene          = entrez_ids,
+    organism      = "dre",# "dre" for Zebrafish, check KEGG for supported organisms
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.5,
+    qvalueCutoff  = 0.5
+)
+
+# write.csv(go_enrich@result, "GO_Enrichment_Results.csv")
+# write.csv(kegg_enrich@result, "KEGG_Enrichment_Results.csv")
+
+# ________________
+
+# Generate a dotplot with better aesthetics for GO
+dotplot(go_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 14),  # Adjust legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "GO Enrichment (Biological Process)",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+  
+ggsave("GO Enrichment_SOSY_down1.png", width = 10, height = 10, dpi = 300)  
+
+# __________________
+# KEGG Pathway Enrichment
+
+# Generate a dotplot with better aesthetics for KEGG
+dotplot(kegg_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 14),  # Adjust legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "KEGG Pathway Enrichment",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+
+# Save as png
+ggsave("KEGG_pathway_enrichment_SOSY_down1.png", width = 9, height = 10, dpi = 300)  # Adjust height as needed
+
+```
+
+# data visualisation
+```{r}
+# MA Plot:
+# Convert results to a data frame
+res_df <- as.data.frame(resSF_old)
+
+# Add an 'is_significant' column based on adjusted p-value and log2FoldChange
+res_df$Significance <- ifelse(res_df$padj < 0.05 & abs(res_df$log2FoldChange) > 0, 
+                              "Significant", "Not Significant")
+
+# Generate MA Plot
+ggplot(res_df, aes(x = log10(baseMean + 1), y = log2FoldChange, color = Significance)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = c("Significant" = "red", "Not Significant" = "gray")) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(title = "MA Plot: Surface Old vs. Surface Young",
+       x = "Log10 Mean Expression",
+       y = "Log2 Fold Change",
+       color = "Gene Significance") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "top")
+
+# Volcano Plot
+# Convert DESeq2 results to a data frame
+res_df <- as.data.frame(resSF_old)
+
+# Add a column for significance based on padj and log2FoldChange thresholds
+res_df$Significance <- ifelse(res_df$padj < 0.05 & abs(res_df$log2FoldChange) > 1, 
+                              "Significant", "Not Significant")
+
+# Generate the Volcano Plot
+ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj), color = Significance)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  scale_color_manual(values = c("Significant" = "red", "Not Significant" = "gray")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+  labs(title = "Volcano Plot: Surface Old vs. Young",
+       x = "Log2 Fold Change",
+       y = "-Log10 Adjusted P-Value",
+       color = "Gene Significance") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "top")
+
+# heatmap
+# Extract the top significant genes (adjust p-value < 0.05)
+top_genes <- rownames(resSF_old[which(resSF_old$padj < 0.05), ])
+
+# Regularized log transformation for better visualization
+rld <- rlog(dds, blind = FALSE)
+
+# Subset normalized counts for the top significant genes
+heatmap_data <- assay(rld)[top_genes, ]
+
+# Scale data (mean-center each gene across samples)
+heatmap_data_scaled <- t(scale(t(heatmap_data)))
+
+# Create heatmap
+pheatmap(heatmap_data_scaled, 
+         annotation_col = coldata_surface_young_old,  # Add sample metadata if available
+         show_rownames = FALSE,  # Hide gene names for clarity
+         color = colorRampPalette(c("blue", "white", "red"))(50), 
+         cluster_rows = TRUE, 
+         cluster_cols = TRUE, 
+         fontsize = 10, 
+         main = "Heatmap: Surface Old vs. Young")
+
+
+```
+
+#-----------------------------------------------------------
+# cavefish old and young
+# coldata_cavefish_old_young
+```{r}
+# Create coldata for Surface Young and Surface Old samples
+coldata_cavefish_old_young <- data.frame(
+  age = c("young", "young", "young", "young", 
+          "old", "old", "old")
+)
+
+# Assign row names corresponding to sample names in the raw counts matrix
+row.names(coldata_cavefish_old_young) <- 
+  c("PA_BRAIN_1", "PA_BRAIN_2", "PA_BRAIN_3", "PA_BRAIN_4", 
+                  "PA_BRAIN_6", "PA_BRAIN_7", "PA_BRAIN_8")
+
+```
+
+# Run DESeq2 Analysis
+```{r}
+# Ensure row names of raw_counts match the sample names in coldata_surface_old_young
+dds <- DESeqDataSetFromMatrix(countData = cavefish_old_young, 
+                              colData = coldata_cavefish_old_young, 
+                              design = ~ age)
+
+# Run DESeq2 analysis
+dds <- DESeq(dds)
+
+# Cavefish Old vs. Cavefish Young
+# Get results for Cavefish Old vs. Cavefish Young
+resCV_old <- results(dds, contrast = c("age", "old", "young"))
+
+# Filter for significant genes with padj ≤ 0.05
+sig_genesCV_old <- resCV_old[which(resCV_old$padj <= 0.05 & !is.na(resCV_old$padj)), ]
+
+# Further filter for biologically meaningful fold changes (e.g., |log2FC| ≥ 1)
+# upregulated
+sig_genesCV_old_up <- sig_genesCV_old[sig_genesCV_old$log2FoldChange >= 1, ]
+sig_genesCV_old_up <- data.frame(sig_genesCV_old_up)
+
+# Save to a new file
+write.csv(sig_genesCV_old_up, "up_cavefish_old_young.csv")
+
+# downregulated
+sig_genesOlds_down <- sig_genesOld[sig_genesOld$log2FoldChange <= -1, ]
+sig_genesOld_down <- data.frame(sig_genesOlds_down)
+```
+
+
+# For GO analysis
+```{r}
+# Positively regulated genes (log2FoldChange >= 1)
+upregulated_oldgenes1 <- sig_genesOld[sig_genesOld$log2FoldChange >= 1, ]
+upregulated_oldgenes1 <- data.frame(upregulated_oldgenes1)
+
+# insert genename
+# Convert row names to first column
+upregulated_oldgenes1 <- data.frame(Gene.stable.ID = rownames(upregulated_oldgenes1), upregulated_oldgenes1, row.names = NULL)
+
+# Perform the merge on the "Gene stable ID" column
+upregulated_oldgenes1 <- merge(upregulated_oldgenes1,
+                        astyanax_data[, c("Gene.stable.ID", "Gene.name")],
+                        by = "Gene.stable.ID", all.x = TRUE)
+
+write.csv(upregulated_oldgenes1, "up_surface_old_youngFoldchange1.csv")
+
+# Negatively regulated genes (log2FoldChange <= -1)
+downregulated_oldgenes1 <- sig_genesOld[sig_genesOld$log2FoldChange <= -1, ]
+downregulated_oldgenes1 <- data.frame(downregulated_oldgenes1)
+
+# insert genename
+# Convert row names to first column
+downregulated_oldgenes1 <- data.frame(Gene.stable.ID = rownames(downregulated_oldgenes1), downregulated_oldgenes1, row.names = NULL)
+
+# Perform the merge on the "Gene stable ID" column
+downregulated_oldgenes1 <- merge(downregulated_oldgenes1,
+                           astyanax_data[, c("Gene.stable.ID", "Gene.name")], by = "Gene.stable.ID", all.x = TRUE)
+
+write.csv(downregulated_oldgenes1, "down_surface_old_youngFoldchange1.csv")
+```
+
+
+```{r}
+
+# Surface Young vs. Surface Old
+# Get results for Surface Young vs. Surface Old
+resSF_young <- results(dds, contrast = c("Age", "young", "old"))
+
+# Filter for significant genes with padj ≤ 0.05
+sig_genesYg <- resSF_young[which(resSF_young$padj <= 0.05 & !is.na(resSF_young$padj)), ]
+
+# Further filter for biologically meaningful fold changes (e.g., |log2FC| ≥ 1)
+# upregulated
+sig_genesYg_up <- sig_genesYg[sig_genesYg$log2FoldChange >= 1, ]
+sig_genesYg_up <- data.frame(sig_genesYg_up)
+
+# Save to a new file
+write.csv(sig_genesYg_up, "up_surface_young_old.csv")
+
+# downregulated
+sig_genesYg_down <- sig_genesYg[sig_genesYg$log2FoldChange <= -1, ]
+sig_genesYg_down <- data.frame(sig_genesYg_down)
+
+```
+
+# Go analysis CV old vs young up
+```{r}
+upregulated_CVoldgenes <- read.csv("up_cavefish_old_youngFoldchange0.csv")
+
+gene_list <- upregulated_CVoldgenes$Gene.name
+
+# Perform GO Enrichment Analysis
+
+go_enrich <- enrichGO(
+    gene          = gene_list,       # List of genes
+    OrgDb         = org.Dr.eg.db,    # Zebrafish annotation database
+    keyType       = "SYMBOL",        # Adjust if using Ensembl ("ENSEMBL") or Entrez ("ENTREZID")
+    ont           = "BP",            # Ontology: "BP" (Biological Process), "MF", or "CC"
+    pAdjustMethod = "BH",            # Adjusted p-value method (Benjamini-Hochberg)
+    pvalueCutoff  = 0.5,            # p-value cutoff for significance
+    qvalueCutoff  = 0.5             # q-value cutoff
+)
+
+# # View results
+# head(go_enrich)
+#
+# # Plot top 20 enriched GO terms
+#barplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+# dotplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+
+
+#  Perform KEGG Pathway Enrichment Analysis
+
+gene_entrez <- bitr(gene_list, fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Dr.eg.db)
+entrez_ids <- gene_entrez$ENTREZID  # Extract Entrez IDs
+
+kegg_enrich <- enrichKEGG(
+    gene          = entrez_ids,
+    organism      = "dre",           # "dre" for Zebrafish, check KEGG for supported organisms
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.5,
+    qvalueCutoff  = 0.5
+)
+
+# Generate a dotplot with better aesthetics for GO
+dotplot(go_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+     theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 18, face = "bold"),
+        axis.title = element_text(size = 20, face = "bold"),
+        plot.title = element_text(size = 22, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 18),  # Adjust legend text size
+        legend.title = element_text(size = 18, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "GO Enrichment (Biological Process)",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+  
+ggsave("GO_Enrichment_COCY_up.png", width = 12, height = 14, dpi = 300)  
+
+# __________________
+# KEGG Pathway Enrichment
+
+# Generate a dotplot with better aesthetics for KEGG
+dotplot(kegg_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 18, face = "bold"),
+        axis.title = element_text(size = 20, face = "bold"),
+        plot.title = element_text(size = 22, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 18),  # Adjust legend text size
+        legend.title = element_text(size = 18, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "KEGG Pathway Enrichment",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+
+# Save as png
+ggsave("KEGG_pathway_enrichment_COCY_up.png", width = 12, height = 14, dpi = 300)  # Adjust height as needed
+
+```
+
+
+# Go analysis cavefish old vs young down
+```{r}
+downregulated_CVoldgenes <- read.csv("down_cavefish_old_youngFoldchange0.csv")
+
+gene_list <- downregulated_CVoldgenes$Gene.name
+
+# Perform GO Enrichment Analysis
+
+go_enrich <- enrichGO(
+    gene          = gene_list,       # List of genes
+    OrgDb         = org.Dr.eg.db,    # Zebrafish annotation database
+    keyType       = "SYMBOL",        # Adjust if using Ensembl ("ENSEMBL") or Entrez ("ENTREZID")
+    ont           = "BP",            # Ontology: "BP" (Biological Process), "MF", or "CC"
+    pAdjustMethod = "BH",            # Adjusted p-value method (Benjamini-Hochberg)
+    pvalueCutoff  = 0.5,            # p-value cutoff for significance
+    qvalueCutoff  = 0.5             # q-value cutoff
+)
+
+# # View results
+# head(go_enrich)
+# 
+# # Plot top 20 enriched GO terms
+#barplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+# dotplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+
+
+#  Perform KEGG Pathway Enrichment Analysis
+
+gene_entrez <- bitr(gene_list, fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Dr.eg.db)
+entrez_ids <- gene_entrez$ENTREZID  # Extract Entrez IDs
+
+kegg_enrich <- enrichKEGG(
+    gene          = entrez_ids,
+    organism      = "dre",# "dre" for Zebrafish, check KEGG for supported organisms
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.5,
+    qvalueCutoff  = 0.5
+)
+
+# write.csv(go_enrich@result, "GO_Enrichment_Results.csv")
+# write.csv(kegg_enrich@result, "KEGG_Enrichment_Results.csv")
+
+# ________________
+
+# Generate a dotplot with better aesthetics for GO
+dotplot(go_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 18, face = "bold"),
+        axis.title = element_text(size = 20, face = "bold"),
+        plot.title = element_text(size = 22, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 18),  # Adjust legend text size
+        legend.title = element_text(size = 18, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "GO Enrichment (Biological Process)",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+  
+ggsave("GO_Enrichment_COCY_down.png", width = 12, height = 14, dpi = 300)  
+
+# __________________
+# KEGG Pathway Enrichment
+
+# Generate a dotplot with better aesthetics for KEGG
+dotplot(kegg_enrich, showCategory = 20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 18, face = "bold"),
+        axis.title = element_text(size = 20, face = "bold"),
+        plot.title = element_text(size = 22, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 18),  # Adjust legend text size
+        legend.title = element_text(size = 18, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "KEGG Pathway Enrichment",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+
+# Save as png
+ggsave("KEGG_pathway_enrichment_COCY_down.png", width = 12, height = 14, dpi = 300)  # Adjust height as needed
+
+```
+
+# cavefish old and surface young
+# coldata_cavefish_old_surface_young
+```{r}
+coldata_cavefish_old_surface_young <- data.frame(
+  species = c("surface", "surface", "surface", "surface", 
+              "cavefish", "cavefish", "cavefish"),
+  Age = c("young", "young", "young", "young", 
+          "old", "old", "old")
+)
+
+# Assign row names to coldata_surface_young_cavefish_old to match the sample names in raw counts
+row.names(coldata_cavefish_old_surface_young) <- 
+  c("SF_BRAIN_1", "SF_BRAIN_2", "SF_BRAIN_3", "SF_BRAIN_4", 
+    "PA_BRAIN_6", "PA_BRAIN_7", "PA_BRAIN_8")
+
+```
+
+# Run DESeq2 Analysis
+```{r}
+# Ensure row names of raw_counts match the sample names in coldata_surface_old_young
+dds <- DESeqDataSetFromMatrix(countData = cavefish_old_surface_young, 
+                              colData = coldata_cavefish_old_surface_young, 
+                              design = ~ species)
+
+# Run DESeq2 analysis
+dds <- DESeq(dds)
+
+# Cavefish Old vs. Surface Young
+# Get results for Surface Old vs. Surface Young
+resCV_old <- results(dds, contrast = c("species", "cavefish", "surface"))
+
+# Filter for significant genes with padj ≤ 0.05
+sig_genesCV <- resCV_old[which(resCV_old$padj <= 0.05 & !is.na(resCV_old$padj)), ]
+
+# Further filter for biologically meaningful fold changes (e.g., |log2FC| ≥ 1)
+# upregulated
+sig_genesCV_up <- sig_genesCV[sig_genesCV$log2FoldChange >= 1, ]
+sig_genesCV_up <- data.frame(sig_genesCV_up)
+
+# Save to a new file
+#write.csv(sig_genesCV_up, "up_cave_old_surface_young.csv")
+
+# downregulated
+sig_genesCV_down <- sig_genesCV[sig_genesCV$log2FoldChange <= -1, ]
+sig_genesCV_down <- data.frame(sig_genesCV_down)
+
+
+# For GO analysis
+# Positively regulated genes (log2FoldChange > 0)
+upregulated_CVoldgenes <- sig_genesCV[sig_genesCV$log2FoldChange > 0, ]
+upregulated_CVoldgenes <- data.frame(upregulated_CVoldgenes)
+
+# insert genename
+# Convert row names to first column
+upregulated_CVoldgenes <- data.frame(Gene.stable.ID = rownames(upregulated_CVoldgenes), upregulated_CVoldgenes, row.names = NULL)
+
+# Perform the merge on the "Gene stable ID" column
+upregulated_CVoldgenes <- merge(upregulated_CVoldgenes, 
+                           astyanax_data[, c("Gene.stable.ID", "Gene.name")], by = "Gene.stable.ID", all.x = TRUE)
+
+upregulated_CVoldgenes <- upregulated_CVoldgenes[upregulated_CVoldgenes$Gene.name != "", ]
+
+write.csv(upregulated_CVoldgenes, "up_CV_old_SF_youngFoldchange0.csv")
+
+# Negatively regulated genes (log2FoldChange < 0)
+downregulated_CVoldgenes <- sig_genesCV[sig_genesCV$log2FoldChange < 0, ]
+downregulated_CVoldgenes <- data.frame(downregulated_CVoldgenes)
+
+# insert genename
+# Convert row names to first column
+downregulated_CVoldgenes <- data.frame(Gene.stable.ID = rownames(downregulated_CVoldgenes), downregulated_CVoldgenes, row.names = NULL)
+
+# Perform the merge on the "Gene stable ID" column
+downregulated_CVoldgenes <- merge(downregulated_CVoldgenes, 
+                           astyanax_data[, c("Gene.stable.ID", "Gene.name")], by = "Gene.stable.ID", all.x = TRUE)
+
+downregulated_CVoldgenes <- downregulated_CVoldgenes[downregulated_CVoldgenes$Gene.name != "", ]
+
+write.csv(downregulated_CVoldgenes, "down_CV_old_SF_youngFoldchange0.csv")
+
+###########################
+
+# Cavefsih vs. Surface young
+# Get results for Surface Young vs. Surface Old
+resSF_young <- results(dds, contrast = c("species", "surface", "cavefish"))
+
+# Filter for significant genes with padj ≤ 0.05
+sig_genesYg <- resSF_young[which(resSF_young$padj <= 0.05 & !is.na(resSF_young$padj)), ]
+
+# Further filter for biologically meaningful fold changes (e.g., |log2FC| ≥ 1)
+# upregulated
+sig_genesYg_up <- sig_genesYg[sig_genesYg$log2FoldChange >= 1, ]
+sig_genesYg_up <- data.frame(sig_genesYg_up)
+
+# Save to a new file
+#write.csv(sig_genesYg_up, "up_CV_old_SF_young.csv")
+
+# downregulated
+sig_genesYg_down <- sig_genesYg[sig_genesYg$log2FoldChange <= -1, ]
+sig_genesYg_down <- data.frame(sig_genesYg_down)
+
+
+```
+
+# Go analysis up
+```{r}
+upregulated_CVoldgenes <- read.csv("up_CV_old_SF_youngFoldchange0.csv")
+
+gene_list <- upregulated_CVoldgenes$Gene.name
+
+# Perform GO Enrichment Analysis
+
+go_enrich <- enrichGO(
+    gene          = gene_list,       # List of genes
+    OrgDb         = org.Dr.eg.db,    # Zebrafish annotation database
+    keyType       = "SYMBOL",        # Adjust if using Ensembl ("ENSEMBL") or Entrez ("ENTREZID")
+    ont           = "BP",            # Ontology: "BP" (Biological Process), "MF", or "CC"
+    pAdjustMethod = "BH",            # Adjusted p-value method (Benjamini-Hochberg)
+    pvalueCutoff  = 0.05,            # p-value cutoff for significance
+    qvalueCutoff  = 0.05             # q-value cutoff
+)
+
+# # View results
+# head(go_enrich)
+# 
+# # Plot top 20 enriched GO terms
+# barplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+# dotplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+
+
+#  Perform KEGG Pathway Enrichment Analysis
+
+gene_entrez <- bitr(gene_list, fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Dr.eg.db)
+entrez_ids <- gene_entrez$ENTREZID  # Extract Entrez IDs
+
+kegg_enrich <- enrichKEGG(
+    gene          = entrez_ids,
+    organism      = "dre",           # "dre" for Zebrafish, check KEGG for supported organisms
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    qvalueCutoff  = 0.05
+)
+
+# # View KEGG results
+# head(kegg_enrich)
+# 
+# # Plot KEGG results
+# barplot(kegg_enrich, showCategory=20, title="KEGG Pathway Enrichment")
+# dotplot(kegg_enrich, showCategory=20, title="KEGG Pathway Enrichment")
+
+
+# write.csv(go_enrich@result, "GO_Enrichment_Results.csv")
+# write.csv(kegg_enrich@result, "KEGG_Enrichment_Results.csv")
+
+
+# ________________
+
+# Generate a dotplot with better aesthetics for GO
+dotplot(go_enrich, showCategory=20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+    axis.text.y = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 16, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+    legend.text = element_text(size = 14),  # Adjust legend text size
+    legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+    plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+    panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+  ) +
+  scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+  labs(
+    title = "GO Enrichment (Biological Process)",
+    x = "Gene Ratio",
+    #y = "GO Terms",
+    color = "Adjusted p-value"
+  )
+
+ggsave("GO Enrichment_COSY_up.png", width = 10, height = 10, dpi = 300)
+
+# __________________
+# KEGG Pathway Enrichment
+
+# Generate a dotplot with better aesthetics for KEGG
+dotplot(kegg_enrich, showCategory=20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+        axis.text.y = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+        legend.text = element_text(size = 14),  # Adjust legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+        plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+        panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+    ) +
+    scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+    labs(
+        title = "KEGG Pathway Enrichment",
+        x = "Gene Ratio",
+        #y = "GO Terms",
+        color = "Adjusted p-value"
+    )
+
+# Save as png
+ggsave("KEGG_pathway_enrichment_COSY_up.png", width = 9, height = 10, dpi = 300)  # Adjust height as needed
+
+```
+
+
+# Go analysis down
+```{r}
+downregulated_CVoldgenes <- read.csv("down_CV_old_SF_youngFoldchange0.csv")
+
+gene_list <- downregulated_CVoldgenes$Gene.name
+
+# Perform GO Enrichment Analysis
+
+go_enrich <- enrichGO(
+    gene          = gene_list,       # List of genes
+    OrgDb         = org.Dr.eg.db,    # Zebrafish annotation database
+    keyType       = "SYMBOL",        # Adjust if using Ensembl ("ENSEMBL") or Entrez ("ENTREZID")
+    ont           = "BP",            # Ontology: "BP" (Biological Process), "MF", or "CC"
+    pAdjustMethod = "BH",            # Adjusted p-value method (Benjamini-Hochberg)
+    pvalueCutoff  = 0.05,            # p-value cutoff for significance
+    qvalueCutoff  = 0.05             # q-value cutoff
+)
+
+# # View results
+# head(go_enrich)
+# 
+# # Plot top 20 enriched GO terms
+# barplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+# dotplot(go_enrich, showCategory=20, title="GO Enrichment (Biological Process)")
+
+
+#  Perform KEGG Pathway Enrichment Analysis
+
+gene_entrez <- bitr(gene_list, fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Dr.eg.db)
+entrez_ids <- gene_entrez$ENTREZID  # Extract Entrez IDs
+
+kegg_enrich <- enrichKEGG(
+    gene          = entrez_ids,
+    organism      = "dre",           # "dre" for Zebrafish, check KEGG for supported organisms
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    qvalueCutoff  = 0.05
+)
+
+# # View KEGG results
+# head(kegg_enrich)
+# 
+# # Plot KEGG results
+# barplot(kegg_enrich, showCategory=20, title="KEGG Pathway Enrichment")
+# dotplot(kegg_enrich, showCategory=20, title="KEGG Pathway Enrichment")
+
+
+# write.csv(go_enrich@result, "GO_Enrichment_Results.csv")
+# write.csv(kegg_enrich@result, "KEGG_Enrichment_Results.csv")
+
+
+# ________________
+
+# Generate a dotplot with better aesthetics for GO
+dotplot(go_enrich, showCategory=20) +
+  theme_minimal(base_size = 16) +  # Use a clean minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+    axis.text.y = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 16, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+    legend.text = element_text(size = 14),  # Adjust legend text size
+    legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+    plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+    panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+  ) +
+  scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+  labs(
+    title = "GO Enrichment (Biological Process)",
+    x = "Gene Ratio",
+    #y = "GO Terms",
+    color = "Adjusted p-value"
+  )
+
+ggsave("GO Enrichment_COSY_down.png", width = 10, height = 10, dpi = 300)  
+
+# __________________
+# KEGG Pathway Enrichment
+
+# Generate a dotplot with better aesthetics for KEGG
+dotplot(kegg_enrich, showCategory=20) +
+    theme_minimal(base_size = 16) +  # Use a clean minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 14, face = "bold"),  # Rotate x-axis labels
+    axis.text.y = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 16, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Center plot title
+    legend.text = element_text(size = 14),  # Adjust legend text size
+    legend.title = element_text(size = 14, face = "bold"),  # Adjust legend title
+    plot.margin = margin(10, 10, 10, 10),  # Add some margin around the plot
+    panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add a black border
+  ) +
+  scale_color_viridis_c(option = "plasma") +  # Use Viridis color palette for better visibility
+  labs(
+    title = "KEGG Pathway Enrichment",
+    x = "Gene Ratio",
+    #y = "GO Terms",
+    color = "Adjusted p-value"
+  )
+ggsave("KEGG_pathway_enrichment_COSY_down.png", width = 9, height = 10, dpi = 300)
+```
+
+# data visualisation
+```{r}
+# MA Plot:
+# Convert results to a data frame
+resCV_df <- as.data.frame(resCV_old)
+
+# Add an 'is_significant' column based on adjusted p-value and log2FoldChange
+resCV_df$Significance <- 
+  ifelse(resCV_df$padj < 0.05 & abs(resCV_df$log2FoldChange) > 0, 
+                              "Significant", "Not Significant")
+
+# Generate MA Plot
+ggplot(resCV_df, aes(x = log10(baseMean + 1), y = log2FoldChange, color = Significance)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = c("Significant" = "red", "Not Significant" = "gray")) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(title = "MA Plot: Cavefish Old vs. Surface Young",
+       x = "Log10 Mean Expression",
+       y = "Log2 Fold Change",
+       color = "Gene Significance") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "top")
+
+# Volcano Plot
+# Convert DESeq2 results to a data frame
+resCV_df <- as.data.frame(resCV_old)
+
+# Add a column for significance based on padj and log2FoldChange thresholds
+resCV_df$Significance <- ifelse(resCV_df$padj < 0.05 & abs(resCV_df$log2FoldChange) > 1, 
+                              "Significant", "Not Significant")
+
+# Generate the Volcano Plot
+ggplot(resCV_df, aes(x = log2FoldChange, y = -log10(padj), color = Significance)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  scale_color_manual(values = c("Significant" = "red", "Not Significant" = "gray")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+  labs(title = "Volcano Plot: Cavefish Old vs. Young",
+       x = "Log2 Fold Change",
+       y = "-Log10 Adjusted P-Value",
+       color = "Gene Significance") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "top")
+
+# heatmap
+# Extract the top significant genes (adjust p-value < 0.05)
+top_genes <- rownames(resCV_old[which(resCV_old$padj < 0.05), ])
+
+# Regularized log transformation for better visualization
+rld <- rlog(dds, blind = FALSE)
+
+# Subset normalized counts for the top significant genes
+heatmap_data <- assay(rld)[top_genes, ]
+
+# Scale data (mean-center each gene across samples)
+heatmap_data_scaled <- t(scale(t(heatmap_data)))
+
+# Create heatmap
+pheatmap(heatmap_data_scaled, 
+         annotation_col = coldata_cavefish_old_surface_young,  # Add sample metadata if available
+         show_rownames = FALSE,  # Hide gene names for clarity
+         color = colorRampPalette(c("blue", "white", "red"))(50), 
+         cluster_rows = TRUE, 
+         cluster_cols = TRUE, 
+         fontsize = 10, 
+         main = "Heatmap: Cavefish Old vs. Young")
+
+
+```
+
+# coldata_surface_young_cavefish_young
+```{r}
+coldata_surface_young_cavefish_young <- data.frame(
+  species = c("surface", "surface", "surface", "surface", 
+              "cavefish", "cavefish", "cavefish", "cavefish"),
+  Age = c("young", "young", "young", "young", 
+          "young", "young", "young", "young")
+)
+
+# Assign row names to coldata_surface_young_cavefish_young to match the sample names in raw counts
+row.names(coldata_surface_young_cavefish_young) <- c("SF_BRAIN_1", "SF_BRAIN_2", "SF_BRAIN_3", "SF_BRAIN_4", 
+                                                     "PA_BRAIN_1", "PA_BRAIN_2", "PA_BRAIN_3", "PA_BRAIN_4")
+
+```
+
+# DESeq for Surface Young vs. Surface Old
+```{r}
+# Ensure factors and levels are set for coldata_surface_young_old
+coldata_surface_young_old <- mutate_if(coldata_surface_young_old, is.character, as.factor)
+coldata_surface_young_old$Age <- relevel(coldata_surface_young_old$Age, ref = "young")
+
+# Create DESeqDataSet for surface young vs. surface old
+dds_surface_young_old <- DESeqDataSetFromMatrix(countData = surface_young_old, colData = coldata_surface_young_old, design = ~ Age)
+
+# Run DESeq
+dds_surface_young_old <- DESeq(dds_surface_young_old)
+
+# Extract the results
+res_surface_young_vs_old <- results(dds_surface_young_old)
+
+normalized_counts_surface_young_old <- counts(dds_surface_young_old, normalized = TRUE)
+```
+
+# DESeq for Surface Young vs. Cavefish Old
+```{r}
+# Ensure factors and levels are set for coldata_surface_young_cavefish_old
+coldata_surface_young_cavefish_old <- mutate_if(coldata_surface_young_cavefish_old, is.character, as.factor)
+coldata_surface_young_cavefish_old$Age <- relevel(coldata_surface_young_cavefish_old$Age, ref = "young")
+
+# Create DESeqDataSet for surface young vs. cavefish old
+dds_surface_young_cavefish_old <- DESeqDataSetFromMatrix(countData = surface_young_cavefish_old, colData = coldata_surface_young_cavefish_old, design = ~ Age)
+
+# Run DESeq
+dds_surface_young_cavefish_old <- DESeq(dds_surface_young_cavefish_old)
+
+# Extract normalized counts
+normalized_counts_surface_young_cavefish_old <- counts(dds_surface_young_cavefish_old, normalized = TRUE)
+
+# Extract the results
+res_surface_young_vs_cavefish_old <- results(dds_surface_young_cavefish_old)
+
+```
+
+# DESeq for Surface Young vs. Cavefish Young
+```{r}
+# Ensure factors and levels are set for coldata_surface_young_cavefish_young
+coldata_surface_young_cavefish_young <- mutate_if(coldata_surface_young_cavefish_young, is.character, as.factor)
+coldata_surface_young_cavefish_young$species <- relevel(coldata_surface_young_cavefish_young$species, ref = "surface")
+
+# Create DESeqDataSet for surface young vs. cavefish young
+dds_surface_young_cavefish_young <- DESeqDataSetFromMatrix(countData = surface_young_cavefish_young, colData = coldata_surface_young_cavefish_young, design = ~species)
+
+# Run DESeq
+dds_surface_young_cavefish_young <- DESeq(dds_surface_young_cavefish_young)
+
+# Extract normalized counts
+normalized_counts_surface_young_cavefish_young <- counts(dds_surface_young_cavefish_young, normalized = TRUE)
+
+
+# Extract the results
+res_surface_young_vs_cavefish_young <- results(dds_surface_young_cavefish_young)
+
+```
+
+# MA Plot
+```{r}
+# MA plot for Surface Young vs. Surface Old
+plotMA(res_surface_young_vs_old, ylim = c(-5, 5), main = "MA Plot: Surface Young vs. Old")
+
+# MA plot for Surface Young vs. Cavefish Old
+plotMA(res_surface_young_vs_cavefish_old, ylim = c(-5, 5), main = "MA Plot: Surface Young vs. Cavefish Old")
+
+# MA plot for Surface Young vs. Cavefish Young
+plotMA(res_surface_young_vs_cavefish_young, ylim = c(-5, 5), main = "MA Plot: Surface Young vs. Cavefish Young")
+
+```
+
+# Volcano Plot
+```{r}
+# Load ggplot2
+library(ggplot2)
+
+# Function to generate Volcano Plot
+volcano_plot <- function(res, title) {
+  res_df <- as.data.frame(res)
+  ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj))) +
+    geom_point(aes(color = padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.5) +
+    scale_color_manual(values = c("grey", "red")) +
+    labs(title = title, x = "Log2 Fold Change", y = "-log10 Adjusted P-value") +
+    theme_minimal()
+}
+
+# Volcano plot for Surface Young vs. Surface Old
+volcano_plot(res_surface_young_vs_old, "Volcano Plot: Surface Young vs. Old")
+
+# Volcano plot for Surface Young vs. Cavefish Old
+volcano_plot(res_surface_young_vs_cavefish_old, "Volcano Plot: Surface Young vs. Cavefish Old")
+
+# Volcano plot for Surface Young vs. Cavefish Young
+volcano_plot(res_surface_young_vs_cavefish_young, "Volcano Plot: Surface Young vs. Cavefish Young")
+
+```
+
+# Heatmap of Top 50 Differentially Expressed Genes
+```{r}
+# Load necessary libraries
+library(DESeq2)
+library(pheatmap)
+
+# Function to create a heatmap for the top 50 significant genes using pheatmap
+heatmap_top_genes_pheatmap <- function(res, normalized_counts, coldata, title) {
+  # Select top 50 significant genes based on adjusted p-value
+  top_genes <- head(rownames(res[order(res$padj), ]), 50)
+  
+  # Subset normalized counts for the top genes
+  top_counts <- normalized_counts[top_genes, ]
+  
+  # Create the heatmap using pheatmap
+  pheatmap(top_counts, 
+           scale = "row",                          # Scale the expression values by row (gene)
+           annotation_col = coldata,               # Add metadata for the columns
+           show_rownames = TRUE,                   # Show gene names
+           show_colnames = TRUE,                   # Show sample names
+           cluster_rows = TRUE,                    # Cluster rows (genes)
+           cluster_cols = TRUE,                    # Cluster columns (samples)
+           main = title)                           # Title of the heatmap
+}
+
+# Example for Surface Young vs. Surface Old dataset
+heatmap_top_genes_pheatmap(res_surface_young_vs_old, normalized_counts_surface_young_old, coldata_surface_young_old, "Top 50 DEGs: Surface Young vs. Surface Old")
+
+# Example for Surface Young vs. Cavefish Old dataset
+heatmap_top_genes_pheatmap(res_surface_young_vs_cavefish_old, normalized_counts_surface_young_cavefish_old, coldata_surface_young_cavefish_old, "Top 50 DEGs: Surface Young vs. Cavefish Old")
+
+# Example for Surface Young vs. Cavefish Young dataset
+heatmap_top_genes_pheatmap(res_surface_young_vs_cavefish_young, normalized_counts_surface_young_cavefish_young, coldata_surface_young_cavefish_young, "Top 50 DEGs: Surface Young vs. Cavefish Young")
+
+```
+
+# PCA Plot
+```{r}
+# Load necessary package
+library(DESeq2)
+
+# PCA plot for Surface Young vs. Old
+vsd_surface_young_old <- vst(dds_surface_young_old, blind = FALSE)
+plotPCA(vsd_surface_young_old, intgroup = "Age")
+
+# PCA plot for Surface Young vs. Cavefish Old
+vsd_surface_young_cavefish_old <- vst(dds_surface_young_cavefish_old, blind = FALSE)
+plotPCA(vsd_surface_young_cavefish_old, intgroup = "Age", main = "PCA: Surface Young vs. Cavefish Old")
+
+# PCA plot for Surface Young vs. Cavefish Young
+vsd_surface_young_cavefish_young <- vst(dds_surface_young_cavefish_young, blind = FALSE)
+plotPCA(vsd_surface_young_cavefish_young, intgroup = "Age", main = "PCA: Surface Young vs. Cavefish Young")
+
+```
+
+## Surface young vs surface old
+```{r}
+library(dplyr)
+# Convert the DESeq2 results to a dataframe
+df_surface_young_vs_old <- as.data.frame(res_surface_young_vs_old)
+
+# Preview the dataframe
+head(df_surface_young_vs_old)
+
+# Optionally, you can save it as a CSV file
+write.csv(df_surface_young_vs_old, "res_surface_young_vs_old_results.csv", row.names = TRUE)
+
+# Read the two CSV files
+astyanax_data <- read.csv("astyanax_mexicanus_2.0.csv", stringsAsFactors = FALSE)
+res_raw_data <- read.csv("res_surface_young_vs_old_results.csv", stringsAsFactors = FALSE)
+
+# change colname X to "Gene.stable.ID"
+colnames(res_raw_data) <- c("Gene.stable.ID", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")
+
+# Perform the merge on the "Gene stable ID" column
+Soy_res_raw_data <- merge(res_raw_data, astyanax_data[, c("Gene.stable.ID", "Gene.name")], 
+                     by = "Gene.stable.ID", all.x = TRUE)
+
+# Extract significant genes for Surface Young vs. Surface Old (padj < 0.05)
+Soy_res_raw_data0.05 <- Soy_res_raw_data[which(Soy_res_raw_data$padj < 0.05), ]
+write.csv(Soy_res_raw_data0.05, "Soy_res_raw_data0.05.csv", row.names = TRUE)
+
+upregulated_SOY <- 
+  Soy_res_raw_data0.05[which(Soy_res_raw_data0.05$log2FoldChange >= 0), ]
+write.csv(upregulated_SOY, "SOY_upregulated.csv", row.names = TRUE)
+
+downregulated_SOY <- 
+  Soy_res_raw_data0.05[which(Soy_res_raw_data0.05$log2FoldChange <= -0), ]
+write.csv(downregulated_SOY, "SOY_downregulated.csv", row.names = TRUE)
+
+```
+
+## Surface young vs cavefish old
+```{r}
+library(dplyr)
+# Convert the DESeq2 results to a dataframe
+df_res_surface_young_vs_cavefish_old <- as.data.frame(res_surface_young_vs_cavefish_old)
+
+# Preview the dataframe
+head(df_res_surface_young_vs_cavefish_old)
+
+# Optionally, you can save it as a CSV file
+write.csv(df_res_surface_young_vs_cavefish_old, "res_surface_young_vs_cavefish_old.csv", row.names = TRUE)
+
+# Read the two CSV files
+astyanax_data <- read.csv("astyanax_mexicanus_2.0.csv", stringsAsFactors = FALSE)
+res_surface_young_vs_cavefish_old_raw_data <- read.csv("res_surface_young_vs_cavefish_old.csv", stringsAsFactors = FALSE)
+
+# change colname X to "Gene.stable.ID"
+colnames(res_surface_young_vs_cavefish_old_raw_data) <- c("Gene.stable.ID", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")
+
+# Perform the merge on the "Gene stable ID" column
+SYCO_res_raw_data <- merge(res_surface_young_vs_cavefish_old_raw_data, 
+                           astyanax_data[, c("Gene.stable.ID", "Gene.name")], by = "Gene.stable.ID", all.x = TRUE)
+
+# Extract significant genes for Surface Young vs. Surface Old (padj < 0.05)
+SYCO_res_raw_data0.05 <- SYCO_res_raw_data[which(SYCO_res_raw_data$padj < 0.05), ]
+write.csv(SYCO_res_raw_data0.05, "SYCO_res_raw_data0.05.csv", row.names = TRUE)
+
+upregulated_SYCO <- 
+  SYCO_res_raw_data0.05[which(SYCO_res_raw_data0.05$log2FoldChange >= 0), ]
+write.csv(upregulated_SYCO, "SYCO_upregulated.csv", row.names = TRUE)
+
+downregulated_SYCO <- 
+  SYCO_res_raw_data0.05[which(SYCO_res_raw_data0.05$log2FoldChange <= -0), ]
+write.csv(downregulated_SYCO, "SYCO_downregulated.csv", row.names = TRUE)
+
+
+```
+
+## Surface young vs cavefish young
+```{r}
+library(dplyr)
+# Convert the DESeq2 results to a dataframe
+df_res_surface_young_vs_cavefish_young <- as.data.frame(res_surface_young_vs_cavefish_young)
+
+# Preview the dataframe
+head(df_res_surface_young_vs_cavefish_young)
+
+# Optionally, you can save it as a CSV file
+write.csv(df_res_surface_young_vs_cavefish_young, "res_surface_young_vs_cavefish_young.csv", row.names = TRUE)
+
+# Read the two CSV files
+astyanax_data <- read.csv("astyanax_mexicanus_2.0.csv", stringsAsFactors = FALSE)
+res_surface_young_vs_cavefish_young_raw_data <- read.csv("res_surface_young_vs_cavefish_young.csv", stringsAsFactors = FALSE)
+
+# change colname X to "Gene.stable.ID"
+colnames(res_surface_young_vs_cavefish_young_raw_data) <- c("Gene.stable.ID", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")
+
+# Perform the merge on the "Gene stable ID" column
+SYCY_res_raw_data <- merge(res_surface_young_vs_cavefish_young_raw_data, 
+                           astyanax_data[, c("Gene.stable.ID", "Gene.name")], by = "Gene.stable.ID", all.x = TRUE)
+
+# Extract significant genes for Surface Young vs. Surface Old (padj < 0.05)
+SYCY_res_raw_data0.05 <- SYCY_res_raw_data[which(SYCY_res_raw_data$padj < 0.05), ]
+write.csv(SYCY_res_raw_data0.05, "SYCY_res_raw_data0.05.csv", row.names = TRUE)
+
+upregulated_SYCY <- 
+SYCY_res_raw_data0.05[which(SYCY_res_raw_data0.05$log2FoldChange >= 0), ]
+write.csv(upregulated_SYCY, "SYCY_upregulated.csv", row.names = TRUE)
+
+downregulated_SYCY <- 
+SYCY_res_raw_data0.05[which(SYCY_res_raw_data0.05$log2FoldChange <= -0), ]
+write.csv(downregulated_SYCY, "SYCY_downregulated.csv", row.names = TRUE)
+
+```
+
+```{r}
+# Adding quote and comma in excel
+# Easier steps:
+# Highlight the cells you want to add the quotes.
+# Go to Format–>Cells–>Custom
+# Copy/Paste the following into the Type field: \"@\", or \'@\'
+# Done!
+```
+
+##    Create the DESeq2 dataset object and perform normalization:
+```{r}
+# Load the raw count data
+raw_counts <- read.csv("raw_counts_brain.csv", row.names = 1)
+
+# Define coldata (already done, using the structure you provided earlier)
+coldata <- data.frame(
+  species = c("cavefish", "cavefish", "cavefish", "cavefish", 
+              "cavefish", "cavefish", "cavefish", 
+              "surface", "surface", "surface", "surface", 
+              "surface", "surface", "surface", "surface"),
+  age = c("young", "young", "young", "young", 
+          "old", "old", "old", 
+          "young", "young", "young", "young", 
+          "old", "old", "old", "old")
+)
+
+
+# Create a DESeq2 dataset object
+dds <- DESeqDataSetFromMatrix(countData = raw_counts, colData = coldata, design = ~ species + age)
+
+# Perform normalization (estimate size factors)
+dds <- estimateSizeFactors(dds)
+
+# Extract normalized counts
+normalized_counts <- counts(dds, normalized = TRUE)
+normalized_counts_df <- as.data.frame(normalized_counts)
+normalized_counts_df$Gene.stable.ID <- rownames(normalized_counts)
+
+astyanax_data <- read.csv("astyanax_mexicanus_2.0.csv", stringsAsFactors = FALSE)
+
+# Merge with gene names
+brain_count2 <- merge(normalized_counts_df, 
+                    astyanax_data[, c("Gene.stable.ID", "Gene.name")],
+                    by = "Gene.stable.ID", all.x = TRUE)
+
+```
+
+
+```{r}
+GO_terms <- list(
+GO6066 =	c(	"lratb.1",	"lss",	"cyp27a1.2",	"cyp46a1.3",	"tkfc",	"itpka",	"npc2",	"bpnt1",	"dhrs9",	"acer1"			),	
+GO1901615=	c(	"lratb.1",	"lss",	"cyp27a1.2",	"cyp46a1.3",	"tkfc",	"fah",	"itpka",	"npc2",	"bpnt1",	"dhrs9",	"acer1"		),	
+GO1901657=	c(	"hprt1l",	"nme6",	"ada2a",	"naga",	"nt5c1ab",	"fuca1.2"							),	
+GO16042	=c(	"pld1b",	"faah2b",	"acadm",	"cyp46a1.3",	"zgc:123305",	"gpcpd1",	"gdpd3a",	"naga",	"acer1"				),	
+GO2224	=c(	"tlr19",	"myd88",	"b2m",	"cd40"									),
+GO1901658	=c(	"ada2a",	"naga",	"fuca1.2"					),	
+GO10035	=c(	"cpne2",	"syt4",	"abcb5",	"carf",	"gpx1b",	"mt2",	"cybrd1"),	
+GO110020=	c(	"limk1a",	"limch1a",	"rbm24a"									),	
+GO46128	=c(	"hprt1l",	"nme6",	"ada2a",	"nt5c1ab"									),	
+GO6302	=c(	"recql",	"dclre1a",	"rad21b",	"dek",	"mrnip",	"babam2",	"otub1b",	"ap5s1"					),	
+GO10038	=c(	"cpne2",	"syt4",	"abcb5",	"carf",	"mt2",	"cybrd1"						),	
+GO2221	=c(	"tlr19",	"myd88",	"b2m",	"cd40"									),	
+GO42278	=c(	"hprt1l",	"nme6",	"ada2a",	"nt5c1ab"									),	
+GO9119	=c(	"hprt1l",	"nme6",	"ada2a",	"nt5c1ab"									),	
+GO1901616=	c(	"cyp46a1.3",	"tkfc",	"fah",	"bpnt1"									),	
+GO30593=	c(	"cftr",	"ccl25b",	"myd88",	"cul1a",	"ccl34b.4"							),	
+GO6282	=c(	"dek",	"mrnip",	"babam2",	"otub1b"									),	
+GO19751=	c(	"cyp27a1.2",	"tkfc",	"itpka",	"bpnt1",	"acer1"								),	
+GO42127	=c(	"cnot7",	"etv5a",	"mstnb",	"bbs4",	"junba",	"ccl25b",	"btg2",	"junbb",	"mych",	"si:dkey-79d12.5",	"kitlga",	"cd40"),	
+GO726	=c(	"rexo4",	"dclre1a",	"mrnip"										),	
+GO9163=	c(	"hprt1l",	"nme6",	"ada2a"										),	
+GO42451=	c(	"hprt1l",	"nme6",	"ada2a"										),	
+GO42455=	c(	"hprt1l",	"nme6",	"ada2a"										),	
+GO46129=	c(	"hprt1l",	"nme6",	"ada2a"										),	
+GO8203=	c(	"lss",	"cyp27a1.2",	"cyp46a1.3",	"npc2"								),	
+GO31032=	c(	"bves",	"epb41l4b",	"limk1a",	"rock2a",	"cnn3a",	"limch1a",	"rbm24a"						),	
+GO48333=	c(	"etv5a",	"rock2a",	"klf2a"										),	
+GO16050=	c(	"syt4",	"hps4",	"sqstm1",	"dnm3a",	"si:dkey-13a21.4",	"vamp3",	"stx12",	"dtnbp1b"					),	
+GO71621=	c(	"cftr",	"ccl25b",	"myd88",	"cul1a",	"ccl34b.4"								),	
+GO44242=	c(	"acadm",	"zgc:123305",	"gpcpd1",	"gdpd3a",	"naga",	"acer1"							),	
+GO1901361=	c(	"cnot7",	"cyp46a1.3",	"rexo4",	"snd1",	"fah",	"pum1",	"zgc:103759",	"ada2a",	"rbm24a",	"lsm3"		),	
+GO1901659	=c(	"hprt1l",	"nme6",	"ada2a"									),	
+GO44283=	c(	"phgdh",	"lss",	"cyp27a1.2",	"hprt1l",	"fads2",	"acsbg2",	"itpka",	"nme6",	"bcat1",	"ada2a",	"zgc:153031",	"acer1"	),	
+GO1901136=	c(	"gpd1b",	"ada2a",	"naga",	"chia.4",	"fuca1.2"								),	
+GO3229=	c(	"mstnb",	"klf2a"											),	
+GO43536=	c(	"mt2",	"cd40"										),	
+GO1901534=	c(	"csf3r",	"myd88"											),	
+GO2000779=	c(	"dek",	"mrnip",	"otub1b"									),	
+GO1902652=	c(	"lss",	"cyp27a1.2",	"cyp46a1.3",	"npc2"								),	
+GO45786=	c(	"ppp1r13bb",	"cdc14b",	"nme6",	"btg2",	"mrnip",	"babam2",	"si:dkey-79d12.5"						),	
+GO46164=	c(	"cyp46a1.3",	"tkfc",	"bpnt1"										),	
+GO34655=	c(	"cnot7",	"rexo4",	"snd1",	"pum1",	"zgc:103759",	"ada2a",	"rbm24a",	"lsm3"				),	
+GO2755=	c(	"myd88",	"b2m"											),	
+GO51496=	c(	"limk1a",	"limch1a"										),	
+GO910=	c(	"rab11fip4b",	"cdc14b",	"rock2a",	"sept9a",	"arl3b"							),	
+GO8285=	c(	"cnot7",	"etv5a",	"mstnb",	"btg2",	"si:dkey-79d12.5"								),	
+GO7519=	c(	"bves",	"bag3",	"mstnb",	"marcksa",	"tm4sf5",	"rbm24a"						),	
+GO16447=	c(	"batf",	"cd40"											),	
+GO31572=	c(	"mrnip",	"babam2"											),	
+GO1990266=	c(	"cftr",	"ccl25b",	"myd88",	"cul1a",	"ccl34b.4"								),	
+GO19439=	c(	"cnot7",	"rexo4",	"snd1",	"fah",	"pum1",	"zgc:103759",	"ada2a",	"rbm24a",	"lsm3"				),	
+GO6040=	c(	"gfpt2",	"chia.4",	"si:ch73-62b13.1"										),	
+GO34341=	c(	"ccl25b",	"cd40",	"ccl34b.4"									),	
+GO9116=	c(	"hprt1l",	"nme6",	"ada2a",	"nt5c1ab"									),	
+GO16445=	c(	"batf",	"cd40"										),	
+GO51492=	c(	"limk1a",	"limch1a"											),	
+GO2366=	c(	"batf",	"myd88",	"cd40"									),	
+GO71277=c(	"cpne2",	"syt4",	"carf"									),	
+GO71347	=c(	"ccl25b",	"cd40",	"ccl34b.4"									),	
+GO30595=	c(	"cftr",	"ccl25b",	"myd88",	"cul1a",	"ccl34b.4"							),	
+GO51495=	c(	"limk1a",	"rock2a",	"limch1a",	"rbm24a",	"si:ch73-362m14.4"							),	
+GO1902903=	c(	"limk1a",	"camsap2a",	"limch1a",	"tmsb1",	"rbm24a",	"si:ch73-362m14.4",	"dbnlb"						),	
+GO16125=	c(	"lss",	"cyp27a1.2",	"cyp46a1.3",	"npc2"								),	
+GO2263=	c(	"batf",	"myd88",	"cd40"									),	
+GO33344=	c(	"abcg1",	"npc2"										),	
+GO35914=	c(	"marcksa",	"rbm24a"											),	
+GO42572	=c(	"lratb.1",	"dhrs9"											),	
+GO8202=	c(	"lss",	"cyp27a1.2",	"cyp46a1.3",	"dhcr24",	"npc2"							),	
+GO45930=	c(	"cdc14b",	"nme6",	"btg2",	"mrnip",	"si:dkey-79d12.5"								),	
+GO97530=	c(	"cftr",	"ccl25b",	"myd88",	"cul1a",	"ccl34b.4"							),	
+GO422	=c(	"sqstm1",	"atg3",	"fundc2"										),	
+GO61726	=c(	"sqstm1",	"atg3",	"fundc2"										),	
+GO43269=	c(	"wwp2",	"syt4",	"cacna1eb",	"saraf",	"cacng4b",	"kcnab1b",	"kcnf1b",	"cacng6b",	"kcnab2b"				),	
+GO15718	=c(	"proca1",	"slc16a6a",	"mfsd2ab",	"slc16a9a"									),	
+GO60538	=c(	"bves",	"bag3",	"mstnb",	"marcksa",	"tm4sf5",	"rbm24a"							),	
+GO51054	=c(	"mrnip",	"babam2",	"cd40"									),	
+GO51592=	c(	"cpne2",	"syt4",	"carf"									),	
+GO2562	=c(	"batf",	"cd40"										),	
+GO10595	=c(	"mt2",	"cd40"											),	
+GO31638	=c(	"serpine1",	"plat"											),	
+GO33522	=c(	"bmi1b",	"otub1b"										),	
+GO46475	=c(	"gpcpd1",	"gdpd3a"										),	
+GO1901379=	c(	"kcnab1b",	"kcnab2b"											),	
+GO6644=	c(	"pld1b",	"proca1",	"pigm",	"gpcpd1",	"plppr1",	"itpka",	"gdpd3a",	"bpnt1",	"pigf"				),	
+GO40012	=c(	"cftr",	"bves",	"ccl25b",	"mt2",	"arhgap4a",	"rap2c",	"tmsb1",	"cd40",	"rtn4rl2a"				),	
+GO50806	=c(	"cacng4b",	"scgn",	"grin2ab"										),	
+GO70555	=c(	"ccl25b",	"cd40",	"ccl34b.4"										),	
+GO51052	=c(	"dek",	"mrnip",	"babam2",	"otub1b",	"cd40"							),	
+GO46165	=c(	"lss",	"cyp27a1.2",	"itpka",	"acer1"									),	
+GO6401	=c(	"cnot7",	"snd1",	"pum1",	"zgc:103759",	"rbm24a",	"lsm3"							),	
+GO2200	=c(	"batf",	"cd40"											),	
+GO16444	=c(	"batf",	"cd40"										),	
+GO32233	=c(	"limk1a",	"limch1a"											),	
+GO43535=	c(	"mt2",	"cd40"											),	
+GO48641=	c(	"mstnb",	"rbm24a"										),	
+GO1901070=	c(	"hprt1l",	"nme6"										),	
+GO48284=	c(	"eno1b",	"syt4",	"si:dkey-13a21.4",	"vamp3",	"stx12"								),	
+GO61025	=c(	"syt4",	"dnm3a",	"si:dkey-13a21.4",	"vamp3",	"stx12"								),	
+GO30334	=c(	"cftr",	"ccl25b",	"mt2",	"arhgap4a",	"rap2c",	"tmsb1",	"cd40",	"rtn4rl2a"					),	
+GO46434	=c(	"gpcpd1",	"gdpd3a",	"gpd1b",	"bpnt1"									),	
+GO30336	=c(	"arhgap4a",	"rap2c",	"rtn4rl2a"									),	
+GO71248=	c(	"cpne2",	"syt4",	"carf"									),	
+GO3208=	c(	"mstnb",	"klf2a"											),	
+GO46514=	c(	"naga",	"acer1"											),	
+GO60291=	c(	"scgn",	"grin2ab"											),	
+GO71241	=c(	"cpne2",	"syt4",	"carf"									),	
+GO2000146	=c(	"arhgap4a",	"rap2c",	"rtn4rl2a"									),	
+GO2001020=	c(	"dek",	"mrnip",	"babam2",	"otub1b"									),	
+GO44270	=c(	"cnot7",	"rexo4",	"snd1",	"pum1",	"zgc:103759",	"ada2a",	"rbm24a",	"lsm3"					),	
+GO32231	=c(	"limk1a",	"limch1a"											),	
+GO42149	=c(	"prkag3b",	"sik1"											),	
+GO43433	=c(	"ddit3",	"commd6"											),	
+GO55008	=c(	"mstnb",	"klf2a"											),	
+GO46173	=c(	"cyp27a1.2",	"itpka",	"acer1"										),	
+GO97529=	c(	"cftr",	"ccl25b",	"myd88",	"cul1a",	"ccl34b.4"								),	
+GO6650=	c(	"pld1b",	"pigm",	"gpcpd1",	"itpka",	"gdpd3a",	"bpnt1",	"pigf"						),	
+GO46700=	c(	"cnot7",	"rexo4",	"snd1",	"pum1",	"zgc:103759",	"ada2a",	"rbm24a",	"lsm3"					),	
+GO46486=	c(	"pld1b",	"pigm",	"zgc:123305",	"gpcpd1",	"itpka",	"gdpd3a",	"bpnt1",	"pigf"					),	
+GO6721	=c(	"lratb.1",	"lss",	"dhrs9"										),	
+GO71356=	c(	"ccl25b",	"cd40",	"ccl34b.4"										),	
+GO6281=	c(	"ddb2",	"rexo4",	"recql",	"dclre1a",	"rad21b",	"dek",	"mrnip",	"babam2",	"otub1b",	"ap5s1"			),	
+GO2377=	c(	"batf",	"cd40"										),	
+GO10634=	c(	"mt2",	"cd40"											),	
+GO30038=	c(	"limk1a",	"limch1a"											),	
+GO43149=	c(	"limk1a",	"limch1a"											),	
+GO61014=	c(	"cnot7",	"rbm24a"										),	
+GO7517=	c(	"bves",	"bag3",	"mstnb",	"klf2a",	"marcksa",	"tm4sf5",	"rbm24a"						),	
+GO42440=	c(	"hprt1l",	"bbs4",	"urod"										),	
+GO2000145=	c(	"cftr",	"ccl25b",	"mt2",	"arhgap4a",	"rap2c",	"tmsb1",	"cd40",	"rtn4rl2a"					),	
+GO1707	=c(	"etv5a",	"rock2a",	"klf2a"										),	
+GO46174	=c(	"tkfc",	"bpnt1"											),	
+GO6259	=c(	"ddb2",	"rtf2",	"rexo4",	"batf",	"recql",	"dclre1a",	"rad21b",	"dek",	"mrnip",	"babam2",	"otub1b",	"ap5s1",	"cd40"	),
+GO6906=	c(	"syt4",	"si:dkey-13a21.4",	"vamp3",	"stx12"										),
+GO8610=	c(	"pld1b",	"lss",	"cyp27a1.2",	"pigm",	"fads2",	"zgc:123305",	"acsbg2",	"ddit3",	"pigf",	"acer1"				),
+GO6303=	c(	"dclre1a",	"mrnip"												),
+GO10594=	c(	"mt2",	"cd40"											),
+GO1901068=	c(	"hprt1l",	"nme6"											),
+GO1901071=	c(	"chia.4",	"si:ch73-62b13.1"											),
+GO3007=	c(	"mstnb",	"bbs4",	"rock2a",	"klf2a",	"dhrs9",	"rbm24a",	"setd7",	"fabp3"						),
+GO6974=	c(	"ddb2",	"rexo4",	"batf",	"recql",	"dclre1a",	"rad21b",	"dek",	"mrnip",	"babam2",	"rbm24a",	"otub1b",	"ap5s1"		),
+GO45017	=c(	"pld1b",	"pigm",	"zgc:123305",	"pigf"									),
+GO90174	=c(	"syt4",	"si:dkey-13a21.4",	"vamp3",	"stx12"),
+GO43112	=c(	"bves",	"dnm3a",	"cacng4b"),
+GO6402=	c(	"cnot7",	"pum1",	"zgc:103759",	"rbm24a",	"lsm3"),
+GO2285=	c(	"batf",	"cd40"),
+GO6144=	c(	"gmpr2",	"hprt1l"),
+GO16202=	c(	"mstnb",	"rbm24a"),
+GO43266=	c(	"kcnab1b",	"kcnab2b"),
+GO60415=	c(	"mstnb",	"klf2a"),
+GO32956	=c(	"limk1a",	"rock2a",	"limch1a",	"tmsb1",	"rbm24a",	"si:ch73-362m14.4",	"dbnlb"),
+GO8283	=c(	"cnot7",	"etv5a",	"mstnb",	"bbs4",	"junba",	"ccl25b",	"btg2",	"junbb",	"mych",	"si:dkey-79d12.5",	"kitlga",	"cd40"),
+GO10959	=c(	"saraf",	"kcnab1b",	"cacng6b",	"kcnab2b"),
+GO34404	=c(	"hprt1l",	"nme6",	"ada2a")
+)
+
+```
+
+
+# Plotting important genes
+# Upregulated in SF_old brain
+```{r}
+# GO up
+# Select genes of interest
+# Define the lists
+GO_terms <- list(
+  GO_0006066 = c("lratb.1", "lss", "cyp27a1.2", "cyp46a1.3", "tkfc", "itpka", "npc2", "bpnt1", "dhrs9", "acer1"),
+  GO_1901615 = c("lratb.1", "lss", "cyp27a1.2", "cyp46a1.3", "tkfc", "fah", "itpka", "npc2", "bpnt1", "dhrs9", "acer1"),
+  GO_1901657 = c("hprt1l", "nme6", "ada2a", "naga", "nt5c1ab", "fuca1.2"),
+  GO_0016042 = c("pld1b", "faah2b", "acadm", "cyp46a1.3", "zgc:123305", "gpcpd1", "gdpd3a", "naga", "acer1"),
+  GO_0002224 = c("tlr19", "myd88", "b2m", "cd40"),
+  GO_1901658 = c("ada2a", "naga", "fuca1.2"),
+  GO_0010035 = c("cpne2", "syt4", "abcb5", "carf", "gpx1b", "mt2", "cybrd1"),
+  GO_0110020 = c("limk1a", "limch1a", "rbm24a"),
+  GO_0046128 = c("hprt1l", "nme6", "ada2a", "nt5c1ab"),
+  GO_0006302 = c("recql", "dclre1a", "rad21b", "dek", "mrnip", "babam2", "otub1b", "ap5s1")
+)
+
+# Combine all unique gene names
+all_genes <- unique(unlist(GO_terms))
+
+selected_genes_dataset <- brain_count2[brain_count2$Gene.name %in% all_genes, ]
+
+# Compute averages
+selected_genes_dataset$Surface_young <- rowMeans(selected_genes_dataset[, c("SF_BRAIN_1", "SF_BRAIN_2", "SF_BRAIN_3", "SF_BRAIN_4")])
+selected_genes_dataset$Surface_old <- rowMeans(selected_genes_dataset[, c("SF_BRAIN_5", "SF_BRAIN_6", "SF_BRAIN_7", "SF_BRAIN_8")])
+selected_genes_dataset$cave_young <- rowMeans(selected_genes_dataset[, c("PA_BRAIN_1", "PA_BRAIN_2", "PA_BRAIN_3", "PA_BRAIN_4")])
+selected_genes_dataset$cave_old <- rowMeans(selected_genes_dataset[, c("PA_BRAIN_6", "PA_BRAIN_7", "PA_BRAIN_8")])
+
+# Create the final dataframe
+Av_count <- data.frame(Gene.name = selected_genes_dataset$Gene.name,
+                       Surface_young = selected_genes_dataset$Surface_young,
+                       Surface_old = selected_genes_dataset$Surface_old,
+                       cave_young = selected_genes_dataset$cave_young,
+                       cave_old = selected_genes_dataset$cave_old)
+
+# Plotting bar charts
+for (i in 1:nrow(Av_count)) {
+  
+  # Extract gene name and counts
+  gene_name <- Av_count$Gene.name[i]
+  counts <- Av_count[i, 2:5]
+  
+  # Prepare data for plotting
+  data_to_plot <- data.frame(
+    Condition = c("Surface_young", "Surface_old", "cave_young", "cave_old"),
+    Count = as.numeric(counts)
+  )
+  
+  # Create the bar chart
+  p <- ggplot(data_to_plot, aes(x = Condition, y = Count)) +
+    geom_bar(stat = "identity", fill = "skyblue") +
+    ggtitle(paste("Gene:", gene_name)) +
+    theme_minimal() +
+    xlab("Condition") +
+    ylab("Gene Count")
+  
+  # Save each plot with gene name as the file name
+  ggsave(filename = paste0(gene_name, "_bar_chart.png"), plot = p, width = 5, height = 4)
+}
+```
+
+```{r}
+# Define the KEGG terms list
+KEGG_terms <- list(
+  dre03018 = c("eno1b", "cnot7", "btg2", "zgc:103759", "si:dkey-79d12.5", "lsm3"),
+  dre00564 = c("pld1b", "proca1", "pcyt1ba", "zgc:123305", "gpcpd1", "gpd1b", "lcat"),
+  dre03320 = c("cyp27a1.2", "acadm", "fads2", "acsbg2", "fabp7a", "fabp3"),
+  dre00920 = c("selenbp1", "bpnt1"),
+  dre01232 = c("gmpr2", "hprt1l", "nme6", "zgc:103759", "ada2a", "nt5c1ab"),
+  dre00230 = c("gmpr2", "hprt1l", "nme6", "zgc:103759", "ada2a", "nt5c1ab", "pde4bb"),
+  dre04141 = c("hspa8b", "dnajb2", "pdia8", "ssr1", "cul1a", "ddit3", "sec61b", "ufd1l")
+)
+
+# Combine all unique gene names
+all_KEGG_genes <- unique(unlist(KEGG_terms))
+
+# Display the unique gene names
+print(all_KEGG_genes)
+
+
+selected_genes_dataset <- brain_count2[brain_count2$Gene.name %in% all_KEGG_genes, ]
+
+# Compute averages
+selected_genes_dataset$Surface_young <- rowMeans(selected_genes_dataset[, c("SF_BRAIN_1", "SF_BRAIN_2", "SF_BRAIN_3", "SF_BRAIN_4")])
+selected_genes_dataset$Surface_old <- rowMeans(selected_genes_dataset[, c("SF_BRAIN_5", "SF_BRAIN_6", "SF_BRAIN_7", "SF_BRAIN_8")])
+selected_genes_dataset$cave_young <- rowMeans(selected_genes_dataset[, c("PA_BRAIN_1", "PA_BRAIN_2", "PA_BRAIN_3", "PA_BRAIN_4")])
+selected_genes_dataset$cave_old <- rowMeans(selected_genes_dataset[, c("PA_BRAIN_6", "PA_BRAIN_7", "PA_BRAIN_8")])
+
+# Create the final dataframe
+Av_count <- data.frame(Gene.name = selected_genes_dataset$Gene.name,
+                       Surface_young = selected_genes_dataset$Surface_young,
+                       Surface_old = selected_genes_dataset$Surface_old,
+                       cave_young = selected_genes_dataset$cave_young,
+                       cave_old = selected_genes_dataset$cave_old)
+
+# Plotting bar charts
+for (i in 1:nrow(Av_count)) {
+  
+  # Extract gene name and counts
+  gene_name <- Av_count$Gene.name[i]
+  counts <- Av_count[i, 2:5]
+  
+  # Prepare data for plotting
+  data_to_plot <- data.frame(
+    Condition = c("Surface_young", "Surface_old", "cave_young", "cave_old"),
+    Count = as.numeric(counts)
+  )
+  
+  # Create the bar chart
+  p <- ggplot(data_to_plot, aes(x = Condition, y = Count)) +
+    geom_bar(stat = "identity", fill = "skyblue") +
+    ggtitle(paste("Gene:", gene_name)) +
+    theme_minimal() +
+    xlab("Condition") +
+    ylab("Gene Count")
+  
+  # Save each plot with gene name as the file name
+  ggsave(filename = paste0(gene_name, "_bar_chart.png"), plot = p, width = 5, height = 4)
+}
+```
+
+# Downregulated in SF_old Brain
+```{r}
+# Define the GO terms list
+GO_terms <- list(
+  GO_0008361 = c("sema3ga", "sema3d", "sema5ba", "slc12a3", "dbn1", "cntn2", "slc12a7a", "slc12a7b", "slc12a2", "sema6e", "casp3a"),
+  GO_0032535 = c("sema3ga", "sema3d", "sptbn2", "sptb", "sema5ba", "slc12a3", "scinlb", "dbn1", "cntn2", "slc12a7a", "slc12a7b", "slc12a2", "sema6e", "casp3a", "pfn2l"),
+  GO_0006820 = c("slc4a8", "slc12a3", "slco1c1", "slc38a5b", "slc13a5b", "slc12a7a", "slc12a7b", "slc4a11", "slc25a12", "atp10a", "slc26a10", "slc12a2", "slc27a6", "slc16a1a", "pitpnab", "xkr6b", "slc52a3", "ttyh3a", "slc25a38b"),
+  GO_0001558 = c("sema3ga", "sema3d", "sema5ba", "dbn1", "cntn2", "sema6e", "epb41l3a", "igfbp7", "casp3a"),
+  GO_0051129 = c("sema3ga", "sema3d", "sptbn2", "sptb", "sema5ba", "scinlb", "bub1bb", "ldlrad4a", "atad2b", "ldlrad4b", "sema6e", "h1-0", "h1-10"),
+  GO_0050801 = c("slc4a8", "slc41a1", "cetp", "slc12a3", "atp1b2a", "wnk2", "ireb2", "slc12a7a", "slc9a3r1a", "slc12a7b", "slc4a11", "letm1", "slc12a2", "trpc3", "vdra", "f2rl1.1", "slc8a2b", "fam155a", "tfr1a"),
+  GO_0055075 = c("slc12a3", "atp1b2a", "slc12a7a", "slc12a7b", "slc12a2"),
+  GO_0006884 = c("slc12a3", "slc12a7a", "slc12a7b", "slc12a2"),
+  GO_0098659 = c("slc12a3", "atp1b2a", "wnk2", "slc12a7a", "slc12a7b", "slc12a2", "slc8a2b", "fam155a"),
+  GO_0099587 = c("slc12a3", "atp1b2a", "wnk2", "slc12a7a", "slc12a7b", "slc12a2", "slc8a2b", "fam155a"),
+  GO_0055081 = c("cetp", "slc12a3", "slc12a7a", "slc12a7b", "slc12a2"),
+  GO_0055064 = c("slc12a3", "slc12a7a", "slc12a7b", "slc12a2"),
+  GO_0048585 = c("sema3ga", "sema3d", "bcl2b", "sema5ba", "spred2a", "axin1", "pde3a", "tp53bp2a", "grk5l", "numbl", "tsc1b", "helb", "inppl1a", "ldlrad4a", "ldlrad4b", "sema6e", "bambib", "sagb", "chico", "igfbp3", "nphp4"),
+  GO_0098739 = c("slc12a3", "atp1b2a", "wnk2", "slc12a7a", "slc12a7b", "slc12a2", "slc8a2b", "fam155a"),
+  GO_0090066 = c("sema3ga", "sema3d", "sptbn2", "sptb", "sema5ba", "slc12a3", "scinlb", "dbn1", "cntn2", "slc12a7a", "slc12a7b", "slc12a2", "sema6e", "casp3a", "pfn2l"),
+  GO_0048878 = c("slc4a8", "slc41a1", "cetp", "slc12a3", "atp1b2a", "wnk2", "ireb2", "slc12a7a", "slc9a3r1a", "slc12a7b", "slc4a11", "letm1", "slc12a2", "trpc3", "vdra", "igf1rb", "f2rl1.1", "slc8a2b", "pdk4", "fam155a", "tfr1a"),
+  GO_0050922 = c("sema3ga", "sema3d", "sema5ba", "inppl1a", "sema6e"),
+  GO_0022604 = c("sema3ga", "sema3d", "sema5ba", "dbn1", "brwd3", "rhobtb2a", "cntn2", "plxnb1b", "sema6e", "rnd1b", "rac3b", "casp3a"),
+  GO_0016049 = c("sema3ga", "sema3d", "sema5ba", "dbn1", "cntn2", "plxnb1b", "sema6e", "epb41l3a", "igfbp7", "casp3a")
+)
+
+# Extract all unique gene names
+all_GO_genes <- unique(unlist(GO_terms))
+
+selected_genes_dataset <- brain_count2[brain_count2$Gene.name %in% all_GO_genes, ]
+
+# Compute averages
+selected_genes_dataset$Surface_young <- rowMeans(selected_genes_dataset[, c("SF_BRAIN_1", "SF_BRAIN_2", "SF_BRAIN_3", "SF_BRAIN_4")])
+selected_genes_dataset$Surface_old <- rowMeans(selected_genes_dataset[, c("SF_BRAIN_5", "SF_BRAIN_6", "SF_BRAIN_7", "SF_BRAIN_8")])
+selected_genes_dataset$cave_young <- rowMeans(selected_genes_dataset[, c("PA_BRAIN_1", "PA_BRAIN_2", "PA_BRAIN_3", "PA_BRAIN_4")])
+selected_genes_dataset$cave_old <- rowMeans(selected_genes_dataset[, c("PA_BRAIN_6", "PA_BRAIN_7", "PA_BRAIN_8")])
+
+# Create the final dataframe
+Av_count <- data.frame(Gene.name = selected_genes_dataset$Gene.name,
+                       Surface_young = selected_genes_dataset$Surface_young,
+                       Surface_old = selected_genes_dataset$Surface_old,
+                       cave_young = selected_genes_dataset$cave_young,
+                       cave_old = selected_genes_dataset$cave_old)
+
+# Plotting bar charts
+for (i in 1:nrow(Av_count)) {
+  
+  # Extract gene name and counts
+  gene_name <- Av_count$Gene.name[i]
+  counts <- Av_count[i, 2:5]
+  
+  # Prepare data for plotting
+  data_to_plot <- data.frame(
+    Condition = c("Surface_young", "Surface_old", "cave_young", "cave_old"),
+    Count = as.numeric(counts)
+  )
+  
+  # Create the bar chart
+  p <- ggplot(data_to_plot, aes(x = Condition, y = Count)) +
+    geom_bar(stat = "identity", fill = "skyblue") +
+    ggtitle(paste("Gene:", gene_name)) +
+    theme_minimal() +
+    xlab("Condition") +
+    ylab("Gene Count")
+  
+  # Save each plot with gene name as the file name
+  ggsave(filename = paste0(gene_name, "_bar_chart.png"), plot = p, width = 5, height = 4)
+}
+```
+
+
+
